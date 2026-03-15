@@ -1,5 +1,5 @@
 {
-  "user_id": null,
+  "user_id": "100007745562435",
   "groups": [
     {
       "name": "Bảng feed của bạn",
@@ -54,6 +54,8 @@
       "url": "https://www.facebook.com/groups/689441974965697"
     }
   ],
-  "selected": [],
-  "saved_at": "2026-03-14T17:18:44.893895"
+  "selected": [
+    "https://www.facebook.com/groups/vieclamtiengtrunghaiduong"
+  ],
+  "saved_at": "2026-03-14T17:19:18.039915"
 }
