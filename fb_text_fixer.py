@@ -131,6 +131,7 @@ class App(tk.Tk):
         self.group_post_last_run_keys = set()
         self.group_post_daily_counts = {}
         self.group_post_pending_required = {}
+        self.group_post_pending_override = {}
 
         # 3 post slots for group posting (used by interval and schedule)
         self.group_post_slots = []
@@ -195,7 +196,7 @@ class App(tk.Tk):
         # Header (compact)
         hdr = tk.Frame(self, bg=BG_CARD, pady=6)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="📝  FB Text Fixer", font=("Segoe UI", 14, "bold"),
+        tk.Label(hdr, text="🛠  FB Text Fixer", font=("Segoe UI", 14, "bold"),
                  bg=BG_CARD, fg=ACCENT).pack(side="left", padx=20)
         tk.Label(hdr, text="Đăng nhập Facebook → Tải bài đăng → Tự động sửa",
                  font=FONT, bg=BG_CARD, fg=FG_MUTED).pack(side="left")
@@ -230,6 +231,29 @@ class App(tk.Tk):
         tk.Label(self, textvariable=self.status_var, font=("Segoe UI", 9),
                  bg=BG_CARD, fg=FG_MUTED, anchor="w", pady=5, padx=12
                  ).pack(fill="x", side="bottom")
+
+    def _set_app_icon(self):
+        try:
+            icon_path = os.path.join(os.path.dirname(__file__), "logo.ico")
+            if os.path.isfile(icon_path):
+                self.iconbitmap(icon_path)
+        except Exception:
+            pass
+
+    def _load_app_logo(self):
+        try:
+            logo_path = os.path.join(os.path.dirname(__file__), "logo.jpg")
+            if not os.path.isfile(logo_path):
+                return
+            try:
+                from PIL import Image, ImageTk
+            except Exception:
+                return
+            img = Image.open(logo_path)
+            img = img.resize((36, 36), Image.LANCZOS)
+            self._logo_img = ImageTk.PhotoImage(img)
+        except Exception:
+            self._logo_img = None
 
     # ── Tab 3: Scheduler ────────────────────────────────────────────────────
     def _build_tab_scheduler(self, parent):
@@ -477,6 +501,8 @@ class App(tk.Tk):
         left_btns.pack(side="left")
         self._btn(left_btns, "🔄  Tải nhóm", self._fetch_groups, ACCENT).pack(side="left", padx=(0, 6))
         self._btn(left_btns, "🔎  Quét kiểm duyệt", self._scan_group_post_pending_for_groups, "#6ab04c").pack(side="left", padx=(0, 6))
+        self._btn(left_btns, "✅  Đánh dấu đăng ngay", lambda: self._mark_group_post_pending_override(False), "#6ab04c").pack(side="left", padx=(0, 6))
+        self._btn(left_btns, "🧷  Đánh dấu cần duyệt", lambda: self._mark_group_post_pending_override(True), "#e1b12c").pack(side="left", padx=(0, 6))
         self._btn(left_btns, "☑️  Chọn tất cả", lambda: self._toggle_all_group_post(True), "#6ab04c").pack(side="left", padx=(0, 6))
         self._btn(left_btns, "☐  Bỏ chọn", lambda: self._toggle_all_group_post(False), "#2d2d44").pack(side="left")
 
@@ -1040,7 +1066,7 @@ class App(tk.Tk):
                     }
                     return best;
                 }
-                function _norm(s){ return (s||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+                function _norm(s){ return (s||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
                 function _isEnabled(el){
                     try {
                         if (!el) return false;
@@ -1645,6 +1671,64 @@ class App(tk.Tk):
                     time.sleep(0.25)
                 return False
 
+            def _click_any_button(texts, timeout=4):
+                end = time.time() + timeout
+                while time.time() < end and not _stop_requested():
+                    if self._is_action_blocked():
+                        return False
+                    try:
+                        clicked = bool(self.driver.execute_script(
+                            _top_dialog_js_prelude()
+                            + """
+                            function _btnVis(el){
+                                try {
+                                    if (!el) return false;
+                                    var r = el.getBoundingClientRect();
+                                    if (r.width < 5 || r.height < 5) return false;
+                                    var st = window.getComputedStyle(el);
+                                    if (st.display === 'none' || st.visibility === 'hidden') return false;
+                                    if (parseFloat(st.opacity || '1') <= 0.01) return false;
+                                    return true;
+                                } catch(e){ return false; }
+                            }
+                            var texts = arguments[0] || [];
+                            var btns = Array.from(document.querySelectorAll('button, [role="button"], a[role="button"], div[role="button"]'));
+                            var candidates = [];
+                            for (var i=0;i<btns.length;i++){
+                                var el = btns[i];
+                                if (!_btnVis(el)) continue;
+                                var t = _norm(el.innerText || el.textContent);
+                                var a = _norm(el.getAttribute('aria-label') || '');
+                                if (!t && !a) continue;
+                                for (var j=0;j<texts.length;j++){
+                                    var n = _norm(texts[j]);
+                                    if (!n) continue;
+                                    var hit = (t && (t === n || t.indexOf(n) !== -1)) || (a && (a === n || a.indexOf(n) !== -1));
+                                    if (!hit) continue;
+                                    if (!_isEnabled(el)) continue;
+                                    var r = el.getBoundingClientRect();
+                                    var area = r.width * r.height;
+                                    candidates.push({el:el, area:area, exact:(t===n || a===n) ? 1 : 0});
+                                }
+                            }
+                            if (!candidates.length) return false;
+                            candidates.sort(function(a,b){
+                                if (b.exact !== a.exact) return b.exact - a.exact;
+                                return a.area - b.area;
+                            });
+                            var best = candidates[0].el;
+                            try { best.scrollIntoView({block:'center'}); } catch(e2) {}
+                            try { best.click(); return true; } catch(e3) { return false; }
+                            """,
+                            texts,
+                        ))
+                    except Exception:
+                        clicked = False
+                    if clicked:
+                        return True
+                    time.sleep(0.25)
+                return False
+
             # 1) Open composer dialog
             self._log(f"📝 {log_tag} Mở hộp tạo bài viết...", "info")
             dlg = _open_composer_dialog()
@@ -1974,9 +2058,23 @@ class App(tk.Tk):
                         posted = True
                         time.sleep(1.5)
                         break
+                    if _click_any_button([
+                        "đăng", "dang", "post",
+                        "đăng ngay", "dang ngay",
+                        "chia sẻ ngay", "chia se ngay",
+                        "xuất bản", "xuat ban", "publish",
+                        "lên lịch", "len lich", "schedule",
+                    ], timeout=1.2):
+                        self._log(f"📤 {log_tag} Đã bấm Đăng (fallback)", "info")
+                        posted = True
+                        time.sleep(1.5)
+                        break
                     dang_attempts += 1
 
                 if _click_in_top_dialog(["lưu", "save"], timeout=0.5, use_composer_scope=True):
+                    time.sleep(0.8)
+                    continue
+                if _click_any_button(["lưu", "save"], timeout=0.5):
                     time.sleep(0.8)
                     continue
 
@@ -2651,6 +2749,116 @@ class App(tk.Tk):
 
     def _sanitize_text_for_pending(self, text):
         return self._strip_phones(self._strip_links(text))
+
+    def _normalize_text_policy(self, text):
+        try:
+            t = (text or "").strip().lower()
+            t = ''.join(ch for ch in unicodedata.normalize('NFD', t) if unicodedata.category(ch) != 'Mn')
+            return t
+        except Exception:
+            return (text or "").strip().lower()
+
+    def _get_policy_violation_rules(self):
+        return [
+            {
+                "name": "fraud_scam",
+                "keywords": [
+                    "lua dao", "lừa đảo", "chiem doat", "chiếm đoạt", "gia mao", "giả mạo",
+                    "ho tro hoan tien", "hoàn tiền", "doi thuong", "đổi thưởng",
+                    "chiêu trò", "ket ban de tu van", "kết bạn để tư vấn",
+                ],
+                "regex": [
+                    r"\b(doi mat khau|xem sao ke|xac minh tai khoan|xác minh tài khoản)\b",
+                    r"\b(hoan tien|refund)\b",
+                ],
+            },
+            {
+                "name": "fraudulent_goods_services",
+                "keywords": [
+                    "hang gia", "hàng giả", "hang nhai", "hàng nhái", "fake", "replica", "counterfeit",
+                    "giay kham suc khoe", "giấy khám sức khỏe", "giay suc khoe", "giấy sức khỏe",
+                    "bang gia", "bằng giả", "chung chi gia", "chứng chỉ giả",
+                    "lam ho so", "làm hồ sơ", "lam giay to", "làm giấy tờ",
+                    "mua bang", "mua bằng", "ban bang", "bán bằng",
+                ],
+                "regex": [
+                    r"\b(giay kham suc khoe|giay suc khoe|medical certificate)\b",
+                    r"\b(lam|nhan lam|nhận làm|ban|mua)\s*(giay to|giay phep|cccd|cmnd|bang cap|chung chi)\b",
+                    r"\b(fake|counterfeit|replica)\s*(id|license|certificate|degree)\b",
+                ],
+            },
+            {
+                "name": "recruitment_ctv",
+                "keywords": [
+                    "tuyen ctv", "tuyển ctv", "ctv online", "cong tac vien", "cộng tác viên",
+                    "viec nhe luong cao", "việc nhẹ lương cao", "kiem tien online", "kiếm tiền online",
+                    "lam tai nha", "làm tại nhà", "thu nhap 30", "thu nhập 30",
+                ],
+                "regex": [
+                    r"\b(luong\s*\d+\s*trieu|lương\s*\d+\s*triệu)\b",
+                    r"\b(thu\s*nhap\s*\d+\s*trieu|thu\s*nhập\s*\d+\s*triệu)\b",
+                ],
+            },
+            {
+                "name": "loan_finance_invest",
+                "keywords": [
+                    "vay tien", "vay tiền", "vay nong", "vay nóng", "tin dung", "tín dụng",
+                    "dao han", "đáo hạn", "mo the", "mở thẻ", "rut the", "rút thẻ",
+                    "dau tu", "đầu tư", "lai suat", "lãi suất", "cam ket loi nhuan", "cam kết lợi nhuận",
+                    "forex", "fx", "crypto", "bitcoin", "btc", "usdt", "binance",
+                ],
+                "regex": [
+                    r"\b(cam ket|cam kết)\s*\d+%\b",
+                    r"\b(la[iy]\s*\d+%|lãi\s*\d+%)\b",
+                ],
+            },
+            {
+                "name": "gambling",
+                "keywords": [
+                    "ca do", "cá độ", "danh bac", "đánh bạc", "lo de", "lô đề",
+                    "casino", "nha cai", "nhà cái", "no hu", "nổ hũ",
+                ],
+                "regex": [],
+            },
+            {
+                "name": "adult_illegal",
+                "keywords": [
+                    "18+", "sex", "gai goi", "gái gọi", "kich duc", "kích dục",
+                    "ma tuy", "ma túy", "hang cam", "hàng cấm",
+                ],
+                "regex": [],
+            },
+            {
+                "name": "suspicious_contact",
+                "keywords": [
+                    "lh", "liên hệ", "inbox", "ib", "zalo", "telegram", "kakaotalk",
+                    "bit.ly", "tinyurl", "t.co", "goo.gl",
+                ],
+                "regex": [
+                    r"(?:\+?84|0)\d{8,11}",
+                ],
+            },
+        ]
+
+    def _detect_policy_violation_text(self, text):
+        try:
+            t = self._normalize_text_policy(text)
+            if not t:
+                return ""
+            rules = self._get_policy_violation_rules()
+            for rule in rules:
+                for kw in rule.get("keywords", []):
+                    if kw and kw in t:
+                        return f"{rule.get('name')}:{kw}"
+                for rx in rule.get("regex", []):
+                    try:
+                        if rx and re.search(rx, t):
+                            return f"{rule.get('name')}:{rx}"
+                    except Exception:
+                        continue
+            return ""
+        except Exception:
+            return ""
 
     def _detect_pending_comment(self, post_el):
         try:
@@ -5547,6 +5755,22 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    def _mark_group_post_pending_override(self, required):
+        try:
+            selected = [url for url, data in self.group_post_selected_groups.items() if data['var'].get()]
+            if not selected:
+                messagebox.showwarning("Chưa chọn nhóm", "Vui lòng chọn nhóm để đánh dấu.")
+                return
+            for url in selected:
+                self.group_post_pending_override[str(url)] = bool(required)
+                self.group_post_pending_required[str(url)] = bool(required)
+            if getattr(self, "group_post_list_frame", None) is not None:
+                self._update_group_post_list(self.group_post_groups_all, selected_set=self.group_post_selected_urls, update_source=False)
+            state = "Cần kiểm duyệt" if required else "Đăng ngay"
+            self._log(f"✅ [Nhóm] Đã đánh dấu {len(selected)} nhóm: {state}", "info")
+        except Exception:
+            pass
+
     def _scan_group_post_pending_for_groups(self):
         if not self.logged_in:
             messagebox.showwarning("Chưa đăng nhập", "Vui lòng đăng nhập Facebook trước!")
@@ -5571,7 +5795,10 @@ class App(tk.Tk):
             for idx, group_url in enumerate(group_urls, 1):
                 if self.group_post_stop_event.is_set() or self.group_post_schedule_stop_event.is_set():
                     break
-                required = self._detect_group_post_requires_approval(group_url)
+                if str(group_url) in self.group_post_pending_override:
+                    required = bool(self.group_post_pending_override.get(str(group_url)))
+                else:
+                    required = self._detect_group_post_requires_approval(group_url)
                 if required is None:
                     self._log(f"  ⚠️ [Nhóm] Không xác định kiểm duyệt: {group_url}", "warn")
                     continue
@@ -5589,6 +5816,8 @@ class App(tk.Tk):
     def _detect_group_post_requires_approval(self, group_url):
         if not self.driver:
             return None
+        if str(group_url) in self.group_post_pending_override:
+            return bool(self.group_post_pending_override.get(str(group_url)))
         try:
             self.driver.get(group_url)
             time.sleep(3)
@@ -5603,37 +5832,174 @@ class App(tk.Tk):
         try:
             hit = self.driver.execute_script(
                 """
-                function norm(s){ return (s||'').toLowerCase(); }
-                var t = norm(document.body && (document.body.innerText || document.body.textContent) || '');
-                if (!t) return '';
+                function norm(s){ return (s||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+                function isVisible(el){
+                    try {
+                        if (!el) return false;
+                        var r = el.getBoundingClientRect();
+                        if (r.width < 80 || r.height < 40) return false;
+                        var st = window.getComputedStyle(el);
+                        if (st.display === 'none' || st.visibility === 'hidden') return false;
+                        return true;
+                    } catch(e){ return false; }
+                }
+
                 var needles = [
                     'bài viết cần phê duyệt',
                     'bài viết của bạn đang chờ phê duyệt',
                     'bài viết của bạn sẽ được phê duyệt',
                     'bài viết sẽ được phê duyệt',
-                    'bài viết đang chờ',
+                    'bài viết sẽ được xem xét',
                     'đang chờ phê duyệt',
                     'chờ phê duyệt',
                     'posts must be approved',
                     'post must be approved',
-                    'require approval',
                     'requires approval',
                     'admin approval',
                     'post is pending',
                     'pending post'
                 ];
-                for (var i=0;i<needles.length;i++){
-                    if (t.indexOf(needles[i]) !== -1) return needles[i];
+
+                function hasNeedle(t){
+                    t = norm(t);
+                    if (!t) return '';
+                    for (var i=0;i<needles.length;i++){
+                        if (t.indexOf(needles[i]) !== -1) return needles[i];
+                    }
+                    return '';
                 }
-                return '';
+
+                function findComposerScopes(){
+                    var scopes = [];
+                    var dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(isVisible);
+                    for (var i=0;i<dialogs.length;i++){
+                        var t = norm(dialogs[i].innerText || dialogs[i].textContent || '');
+                        if (t.indexOf('tạo bài viết') !== -1 || t.indexOf('create post') !== -1) scopes.push(dialogs[i]);
+                    }
+
+                    var editors = Array.from(document.querySelectorAll('[role="textbox"], [contenteditable="true"], [contenteditable="plaintext-only"]'));
+                    for (var j=0;j<editors.length;j++){
+                        var a = norm(editors[j].getAttribute('aria-label') || '');
+                        var p = norm(editors[j].getAttribute('aria-placeholder') || editors[j].getAttribute('data-placeholder') || '');
+                        if (a.indexOf('bạn viết') === -1 && a.indexOf('what\'s on your mind') === -1 &&
+                            p.indexOf('bạn viết') === -1 && p.indexOf('what\'s on your mind') === -1) {
+                            continue;
+                        }
+                        var cur = editors[j];
+                        for (var k=0;k<6 && cur; k++){
+                            if (isVisible(cur)) scopes.push(cur);
+                            cur = cur.parentElement;
+                        }
+                    }
+
+                    // dedupe
+                    var uniq = [];
+                    var seen = new Set();
+                    for (var s=0;s<scopes.length;s++){
+                        if (seen.has(scopes[s])) continue;
+                        seen.add(scopes[s]);
+                        uniq.push(scopes[s]);
+                    }
+                    return uniq;
+                }
+
+                function scanScopes(){
+                    var scopes = findComposerScopes();
+                    if (!scopes.length) return null;
+                    for (var i=0;i<scopes.length;i++){
+                        var t = scopes[i].innerText || scopes[i].textContent || '';
+                        var hit = hasNeedle(t);
+                        if (hit) return hit;
+                    }
+                    return '';
+                }
+
+                var hit = scanScopes();
+                if (hit === null){
+                    // Try click trigger to open composer, then rescan
+                    var triggers = Array.from(document.querySelectorAll('[role="button"], button, a, span, div[role], div[tabindex]'));
+                    for (var t=0;t<triggers.length;t++){
+                        var txt = norm(triggers[t].innerText || triggers[t].textContent || '');
+                        var al = norm(triggers[t].getAttribute('aria-label') || '');
+                        if (txt.indexOf('bạn viết') !== -1 || txt.indexOf('viết bài') !== -1 || txt.indexOf('tạo bài viết') !== -1 ||
+                            al.indexOf('bạn viết') !== -1 || al.indexOf('viết bài') !== -1 || al.indexOf('tạo bài viết') !== -1 ||
+                            txt.indexOf("what's on your mind") !== -1 || al.indexOf("what's on your mind") !== -1) {
+                            try { triggers[t].click(); break; } catch(e) {}
+                        }
+                    }
+                    return null;
+                }
+                return hit;
                 """
             )
         except Exception:
             hit = ""
 
         if hit is None:
+            time.sleep(1.2)
+            try:
+                hit = self.driver.execute_script(
+                    """
+                    function norm(s){ return (s||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
+                    function isVisible(el){
+                        try {
+                            if (!el) return false;
+                            var r = el.getBoundingClientRect();
+                            if (r.width < 80 || r.height < 40) return false;
+                            var st = window.getComputedStyle(el);
+                            if (st.display === 'none' || st.visibility === 'hidden') return false;
+                            return true;
+                        } catch(e){ return false; }
+                    }
+                    var needles = ['phê duyệt', 'approval', 'pending'];
+                    function hasNeedle(t){
+                        t = norm(t);
+                        if (!t) return false;
+                        for (var i=0;i<needles.length;i++) if (t.indexOf(needles[i]) !== -1) return true;
+                        return false;
+                    }
+                    // Dialog composer
+                    var dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(isVisible);
+                    for (var i=0;i<dialogs.length;i++){
+                        var t = norm(dialogs[i].innerText || dialogs[i].textContent || '');
+                        if (t.indexOf('tạo bài viết') !== -1 || t.indexOf('create post') !== -1) {
+                            return hasNeedle(t) ? t : '';
+                        }
+                    }
+                    // Inline composer
+                    var editors = Array.from(document.querySelectorAll('[role="textbox"], [contenteditable="true"], [contenteditable="plaintext-only"]'));
+                    for (var j=0;j<editors.length;j++){
+                        var a = norm(editors[j].getAttribute('aria-label') || '');
+                        var p = norm(editors[j].getAttribute('aria-placeholder') || editors[j].getAttribute('data-placeholder') || '');
+                        if (a.indexOf('bạn viết') === -1 && a.indexOf("what's on your mind") === -1 &&
+                            p.indexOf('bạn viết') === -1 && p.indexOf("what's on your mind") === -1) {
+                            continue;
+                        }
+                        var cur = editors[j];
+                        for (var k=0;k<6 && cur; k++){
+                            if (isVisible(cur)) {
+                                var t2 = norm(cur.innerText || cur.textContent || '');
+                                if (hasNeedle(t2)) return t2;
+                            }
+                            cur = cur.parentElement;
+                        }
+                    }
+                    return '';
+                    """
+                )
+            except Exception:
+                hit = ""
+
+        try:
+            self._close_all_dialogs(aggressive=False)
+        except Exception:
+            pass
+
+        if hit is None:
             return None
-        return bool(hit)
+        if hit == "":
+            return False
+        return True
 
     def _apply_group_post_filter(self):
         try:
@@ -5970,11 +6336,7 @@ class App(tk.Tk):
         ]
 
         if not blocked_keywords and not self.approval_auto_approve_safe.get():
-            messagebox.showwarning(
-                "Thiếu tiêu chí",
-                "Bạn chưa nhập từ khoá cũng như chưa bật tuỳ chọn phê duyệt bài an toàn.",
-            )
-            return
+            self._log("ℹ️ Chưa nhập từ khóa, sẽ dùng bộ lọc vi phạm mặc định để từ chối bài nghi ngờ.", "info")
 
         # Chuẩn bị thread
         self.approval_stop_event.clear()
@@ -6023,6 +6385,16 @@ class App(tk.Tk):
                     break
 
                 # Chờ cho lần kế tiếp
+                try:
+                    next_run = dt.datetime.now() + dt.timedelta(minutes=int(interval_minutes))
+                    weekday_vi = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
+                    day_label = weekday_vi[next_run.weekday()] if 0 <= next_run.weekday() < 7 else ""
+                    self._log(
+                        f"⏳ [Duyệt bài] Lần quét kế tiếp: {day_label}, {next_run.strftime('%H:%M')} (sau {int(interval_minutes)} phút)",
+                        "info",
+                    )
+                except Exception:
+                    pass
                 wait_seconds = max(60, int(interval_minutes) * 60)
                 for _ in range(wait_seconds // 5):
                     if self.approval_stop_event.wait(5):
@@ -6047,8 +6419,8 @@ class App(tk.Tk):
             return
 
         # Điều hướng tới trang bài chờ duyệt. Nhiều group dùng đường dẫn /pending_posts
+        pending_url = group_url.rstrip("/") + "/pending_posts"
         try:
-            pending_url = group_url.rstrip("/") + "/pending_posts"
             self.driver.get(pending_url)
         except Exception:
             self.driver.get(group_url)
@@ -6157,53 +6529,104 @@ class App(tk.Tk):
                 try:
                     posts_local = self.driver.execute_script(
                         """
-                        function norm(s){ return (s||'').toLowerCase(); }
+                        function norm(s){ return (s||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
+                        function isVisible(el){
+                            try {
+                                if (!el) return false;
+                                var r = el.getBoundingClientRect();
+                                if (r.width < 24 || r.height < 24) return false;
+                                var st = window.getComputedStyle(el);
+                                if (st.display === 'none' || st.visibility === 'hidden') return false;
+                                return true;
+                            } catch(e){ return false; }
+                        }
 
-                        // Tìm tất cả các nút có text liên quan tới Phê duyệt / Từ chối
-                        var btns = Array.from(document.querySelectorAll('button, [role="button"]'));
+                        function textPack(el){
+                            if (!el) return '';
+                            var t = '';
+                            try { t += ' ' + (el.innerText || el.textContent || ''); } catch(e) {}
+                            try { t += ' ' + (el.getAttribute && (el.getAttribute('aria-label') || '')) || ''; } catch(e) {}
+                            try { t += ' ' + (el.getAttribute && (el.getAttribute('data-tooltip-content') || '')) || ''; } catch(e) {}
+                            return norm(t);
+                        }
+
+                        function isActionText(t){
+                            return t.indexOf('phê duyệt') !== -1 || t.indexOf('phe duyet') !== -1 ||
+                                   t.indexOf('duyệt') !== -1      || t.indexOf('approve') !== -1 ||
+                                   t.indexOf('chấp thuận') !== -1 || t.indexOf('chap thuan') !== -1 ||
+                                   t.indexOf('từ chối') !== -1    || t.indexOf('tu choi') !== -1 ||
+                                   t.indexOf('decline') !== -1    || t.indexOf('reject') !== -1;
+                        }
+
+                        function isHeaderish(el){
+                            try {
+                                var r = el.getBoundingClientRect();
+                                return r.top < 150 && r.height < 280;
+                            } catch(e) {
+                                return false;
+                            }
+                        }
+
+                        var btns = Array.from(document.querySelectorAll('button, [role="button"]')).filter(isVisible);
                         var roots = [];
                         var seen = new Set();
 
                         function findRoot(el){
                             var cur = el;
-                            // Đi lên tối đa 8 cấp để tìm khối bao quanh bài viết
-                            for (var i=0; i<8 && cur; i++){
+                            for (var i=0; i<16 && cur; i++){
                                 try {
                                     var role = (cur.getAttribute && cur.getAttribute('role')) || '';
                                     if (role === 'article') return cur;
+
+                                    if (isHeaderish(cur)) {
+                                        cur = cur.parentElement;
+                                        continue;
+                                    }
+
+                                    var buttons = cur.querySelectorAll ? Array.from(cur.querySelectorAll('button, [role="button"]')) : [];
+                                    var hasCheckbox = !!(cur.querySelector && cur.querySelector('[role="checkbox"], input[type="checkbox"]'));
+                                    var hasMedia = !!(cur.querySelector && cur.querySelector('img, video, svg'));
+                                    var actionButtons = 0;
+                                    for (var b = 0; b < buttons.length; b++){
+                                        if (isActionText(textPack(buttons[b]))) actionButtons++;
+                                    }
+                                    if ((hasCheckbox && actionButtons >= 1) ||
+                                        (hasMedia && actionButtons >= 1) ||
+                                        (actionButtons >= 2 && textPack(cur).length > 60)) {
+                                        return cur;
+                                    }
                                 } catch(e) {}
                                 cur = cur.parentElement;
                             }
-                            return el.parentElement || el;
+                            return el.closest('div') || el.parentElement || el;
                         }
 
                         for (var i=0; i<btns.length; i++){
-                            var t = norm(btns[i].innerText || btns[i].textContent);
-                            if (!t) continue;
-                            if (
-                                t.indexOf('phê duyệt') !== -1 || t.indexOf('phe duyet') !== -1 ||
-                                t.indexOf('duyệt') !== -1      ||
-                                t.indexOf('approve') !== -1    ||
-                                t.indexOf('chấp thuận') !== -1 ||
-                                t.indexOf('chap thuan') !== -1 ||
-                                t.indexOf('từ chối') !== -1    || t.indexOf('tu choi') !== -1 ||
-                                t.indexOf('decline') !== -1    || t.indexOf('reject') !== -1
-                            ){
-                                var root = findRoot(btns[i]);
-                                if (!root) continue;
-                                // Dùng toạ độ + chiều cao để phân biệt, tránh trùng lặp
-                                var r;
-                                try { r = root.getBoundingClientRect(); } catch(e) { r = null; }
-                                var key = '';
-                                if (r) {
-                                    key = [Math.round(r.top), Math.round(r.left), Math.round(r.width), Math.round(r.height)].join(':');
-                                } else {
-                                    key = String(i);
-                                }
-                                if (!seen.has(key)){
-                                    seen.add(key);
-                                    roots.push(root);
-                                }
+                            var t = textPack(btns[i]);
+                            if (!t || !isActionText(t)) continue;
+                            var root = findRoot(btns[i]);
+                            if (!root) continue;
+                            var r;
+                            try { r = root.getBoundingClientRect(); } catch(e) { r = null; }
+                            if (r && r.top < 120 && !root.querySelector('[role="checkbox"], input[type="checkbox"], img, video')) {
+                                continue;
+                            }
+                            var key = '';
+                            if (r) {
+                                key = [Math.round(r.top), Math.round(r.left), Math.round(r.width), Math.round(r.height)].join(':');
+                            } else {
+                                key = String(i);
+                            }
+                            if (!seen.has(key)){
+                                seen.add(key);
+                                roots.push(root);
+                            }
+                        }
+
+                        if (!roots.length) {
+                            for (var k=0; k<btns.length; k++){
+                                var tt = textPack(btns[k]);
+                                if (tt && isActionText(tt)) roots.push(btns[k]);
                             }
                         }
                         return roots;
@@ -6222,20 +6645,27 @@ class App(tk.Tk):
                         time.sleep(0.8)
                         posts_local = self.driver.execute_script(
                             """
-                            function norm(s){ return (s||'').toLowerCase(); }
+                            function norm(s){ return (s||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
                             var btns = Array.from(document.querySelectorAll('button, [role="button"]'));
                             var roots = [];
                             var seen = new Set();
                             function findRoot(el){
                                 var cur = el;
-                                for (var i=0; i<10 && cur; i++){
+                                for (var i=0; i<14 && cur; i++){
                                     try { if ((cur.getAttribute && cur.getAttribute('role')) === 'article') return cur; } catch(e) {}
+                                    try {
+                                        var t = norm(cur.innerText || cur.textContent || '');
+                                        var btnCount = cur.querySelectorAll ? cur.querySelectorAll('button, [role="button"]').length : 0;
+                                        var hasCb = !!(cur.querySelector && cur.querySelector('[role="checkbox"], input[type="checkbox"]'));
+                                        if (hasCb && btnCount >= 2 && t.length > 50) return cur;
+                                        if (btnCount >= 3 && t.length > 140) return cur;
+                                    } catch(e) {}
                                     cur = cur.parentElement;
                                 }
                                 return el.parentElement || el;
                             }
                             for (var i=0; i<btns.length; i++){
-                                var t = norm(btns[i].innerText || btns[i].textContent);
+                                var t = norm(btns[i].innerText || btns[i].textContent || '');
                                 if (!t) continue;
                                 if (t.indexOf('phê duyệt')!==-1 || t.indexOf('phe duyet')!==-1 || t.indexOf('approve')!==-1 || t.indexOf('từ chối')!==-1 || t.indexOf('tu choi')!==-1 || t.indexOf('decline')!==-1 || t.indexOf('reject')!==-1){
                                     var root = findRoot(btns[i]);
@@ -6253,45 +6683,118 @@ class App(tk.Tk):
 
             return posts_local
 
+        def _scroll_pending_container(steps=2):
+            try:
+                return bool(self.driver.execute_script(
+                    """
+                    var steps = Math.max(1, parseInt(arguments[0] || 1, 10));
+                    function findScrollable(root){
+                        if (!root) return null;
+                        var cur = root;
+                        for (var i=0;i<8 && cur; i++){
+                            var st = window.getComputedStyle(cur);
+                            var oy = st.overflowY || '';
+                            if ((oy === 'auto' || oy === 'scroll') && cur.scrollHeight > cur.clientHeight + 50) {
+                                return cur;
+                            }
+                            cur = cur.parentElement;
+                        }
+                        return null;
+                    }
+
+                    var anchor = document.querySelector('div[role="article"]') ||
+                                 document.querySelector('button, [role="button"]');
+                    var scroller = findScrollable(anchor) || document.scrollingElement || document.documentElement;
+                    if (!scroller) return false;
+                    for (var j=0;j<steps;j++){
+                        scroller.scrollTop = scroller.scrollTop + 800;
+                    }
+                    return true;
+                    """,
+                    steps,
+                ))
+            except Exception:
+                return False
+
+        def _try_clear_pending_filters():
+            try:
+                return bool(self.driver.execute_script(
+                    """
+                    function norm(s){ return (s||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
+                    var btns = Array.from(document.querySelectorAll('button, [role="button"]'));
+                    for (var i=0;i<btns.length;i++){
+                        var t = norm(btns[i].innerText || btns[i].textContent || '');
+                        if (!t) continue;
+                        if (t.indexOf('xóa bộ lọc') !== -1 || t.indexOf('clear filter') !== -1 || t.indexOf('clear filters') !== -1){
+                            try { btns[i].click(); return true; } catch(e) {}
+                        }
+                    }
+                    return false;
+                    """
+                ))
+            except Exception:
+                return False
+
         def _get_post_key(post_el):
             try:
                 return self.driver.execute_script(
                     """
-                    var art = arguments[0];
-                    if (!art) return '';
-                    var links = art.querySelectorAll('a[href]');
-                    for (var i=0;i<links.length;i++) {
-                        var href = links[i].href || '';
-                        if (!href) continue;
-                        if (href.indexOf('/permalink/') !== -1) return href.split('?')[0];
-                        if (href.indexOf('/posts/') !== -1) return href.split('?')[0];
-                        if (href.indexOf('story_fbid=') !== -1 && href.indexOf('id=') !== -1) {
-                            var m = href.match(/story_fbid=([^&]+)/);
-                            var n = href.match(/id=([^&]+)/);
-                            if (m && n) return (n[1] + ':' + m[1]);
-                        }
-                    }
-                    if (!art.dataset.fbfixerId) {
-                        art.dataset.fbfixerId = 'fbfixer-' + Math.random().toString(36).slice(2);
-                    }
-                    return art.dataset.fbfixerId || '';
+                            var el = arguments[0];
+                            if (!el) return null;
+                            function norm(s){ return (s||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
+                            function rootify(node){
+                                var cur = node;
+                                for (var i=0; i<12 && cur; i++){
+                                    try {
+                                        if ((cur.getAttribute && cur.getAttribute('role')) === 'article') return cur;
+                                    } catch(e) {}
+                                    cur = cur.parentElement;
+                                }
+                                return node.parentElement || node;
+                            }
+                            function pickHref(node){
+                                try {
+                                    var links = Array.from(node.querySelectorAll ? node.querySelectorAll('a[href]') : []);
+                                    for (var i=0;i<links.length;i++){
+                                        var href = (links[i].href || '').toString();
+                                        var low = href.toLowerCase();
+                                        if (low.indexOf('/posts/') !== -1 || low.indexOf('/permalink/') !== -1 || low.indexOf('story_fbid=') !== -1 || low.indexOf('/groups/') !== -1) {
+                                            return href;
+                                        }
+                                    }
+                                } catch(e) {}
+                                return '';
+                            }
+                            var root = rootify(el);
+                            var href = pickHref(root);
+                            if (href) return href;
+                            var txt = '';
+                            try { txt = norm(root.innerText || root.textContent || '').slice(0, 220); } catch(e) {}
+                            var rect = null;
+                            try { rect = root.getBoundingClientRect(); } catch(e) { rect = null; }
+                            if (rect) {
+                                return [
+                                    'txt=' + txt,
+                                    'top=' + Math.round(rect.top),
+                                    'left=' + Math.round(rect.left),
+                                    'w=' + Math.round(rect.width),
+                                    'h=' + Math.round(rect.height)
+                                ].join('|');
+                            }
+                            return txt || null;
                     """,
                     post_el,
-                ) or ""
+                )
             except Exception:
-                return ""
-
-        processed_total = 0
-        approved_total = 0
-        rejected_total = 0
-        max_rounds = 6
-        rounds = 0
-        seen_post_keys = set()
-        last_scroll_height = 0
-        no_growth_rounds = 0
+                return None
 
         def _click_action_in_post(post_el, action_name):
             try:
+                try:
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    ActionChains(self.driver).move_to_element(post_el).pause(0.35).perform()
+                except Exception:
+                    pass
                 return bool(self.driver.execute_script(
                     """
                     var root = arguments[0];
@@ -6318,7 +6821,18 @@ class App(tk.Tk):
                     }
                     function clickEl(el){
                         try { el.scrollIntoView({block: 'center', inline: 'center'}); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
                         try { el.click(); return true; } catch(e) { return false; }
+                    }
+
+                    // Nếu chính root là nút thật cần bấm thì xử lý luôn
+                    var rootText = textPack(root);
+                    var rootTag = '';
+                    try { rootTag = (root.tagName || '').toLowerCase(); } catch(e) {}
+                    if (matchAction(rootText) && (rootTag === 'button' || root.getAttribute('role') === 'button')) {
+                        if (clickEl(root)) return true;
                     }
 
                     var btns = Array.from(root.querySelectorAll('button, [role="button"]'));
@@ -6401,6 +6915,9 @@ class App(tk.Tk):
                     }
                     function clickEl(el){
                         try { el.scrollIntoView({block: 'center', inline: 'center'}); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
                         try { el.click(); return true; } catch(e) { return false; }
                     }
 
@@ -6479,6 +6996,9 @@ class App(tk.Tk):
                     }
                     function clickEl(el){
                         try { el.scrollIntoView({block: 'center', inline: 'center'}); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
                         try { el.click(); return true; } catch(e) { return false; }
                     }
 
@@ -6583,11 +7103,60 @@ class App(tk.Tk):
             except Exception:
                 return False
 
+            try:
+                return bool(self.driver.execute_script(
+                    """
+                    var action = arguments[0] || '';
+                    function norm(s){ return (s||'').toLowerCase(); }
+                    function textPack(el){
+                        if (!el) return '';
+                        var t = '';
+                        try { t += ' ' + (el.innerText || el.textContent || ''); } catch(e) {}
+                        try { t += ' ' + (el.getAttribute && (el.getAttribute('aria-label') || '')) || ''; } catch(e) {}
+                        try { t += ' ' + (el.getAttribute && (el.getAttribute('data-tooltip-content') || '')) || ''; } catch(e) {}
+                        return norm(t);
+                    }
+                    function matchAction(s){
+                        if (!s) return false;
+                        if (action === 'approve') {
+                            return s.indexOf('phê duyệt') !== -1 || s.indexOf('phe duyet') !== -1 ||
+                                   s.indexOf('duyệt') !== -1 || s.indexOf('approve') !== -1 ||
+                                   s.indexOf('chấp thuận') !== -1 || s.indexOf('chap thuan') !== -1;
+                        }
+                        return s.indexOf('từ chối') !== -1 || s.indexOf('tu choi') !== -1 ||
+                               s.indexOf('decline') !== -1 || s.indexOf('reject') !== -1;
+                    }
+                    function clickEl(el){
+                        try { el.scrollIntoView({block: 'center', inline: 'center'}); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
+                        try { el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window})); } catch(e) {}
+                        try { el.click(); return true; } catch(e) { return false; }
+                    }
+
+                    var btns = Array.from(document.querySelectorAll('button, [role="button"]'));
+                    for (var i=0;i<btns.length;i++){
+                        var t = textPack(btns[i]);
+                        if (matchAction(t)){
+                            try {
+                                var dis = btns[i].getAttribute('aria-disabled');
+                                if (String(dis) === 'true') continue;
+                            } catch(e) {}
+                            if (clickEl(btns[i])) return true;
+                        }
+                    }
+                    return false;
+                    """,
+                    action_name,
+                ))
+            except Exception:
+                return False
+
         def _confirm_post_to_group_dialog():
             try:
                 return bool(self.driver.execute_script(
                     """
-                    function norm(s){ return (s||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+                    function norm(s){ return (s||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
                     function isVisible(el){
                         try {
                             if (!el) return false;
@@ -6621,11 +7190,11 @@ class App(tk.Tk):
             except Exception:
                 return False
 
-        def _cancel_preapprove_dialog():
+        def _handle_preapprove_dialog():
             try:
-                return bool(self.driver.execute_script(
+                return self.driver.execute_script(
                     """
-                    function norm(s){ return (s||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+                    function norm(s){ return (s||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
                     function isVisible(el){
                         try {
                             if (!el) return false;
@@ -6648,14 +7217,17 @@ class App(tk.Tk):
                             var bt = norm(b.innerText || b.textContent || '');
                             var bl = norm(b.getAttribute('aria-label') || '');
                             var label = bt || bl;
-                            if (label === 'hủy' || label === 'cancel') {
+                            if (label === 'hủy' || label === 'huy' || label === 'cancel' || label === 'close' || label === 'đóng') {
+                                try { b.click(); return 'cancelled'; } catch(e) {}
+                            }
+                            if (label === 'đăng' || label === 'post' || label.indexOf('phê duyệt') !== -1 || label.indexOf('approve') !== -1 || label.indexOf('xác nhận') !== -1 || label.indexOf('confirm') !== -1) {
                                 try { b.click(); return true; } catch(e) {}
                             }
                         }
                     }
-                    return false;
+                    return 'not_found';
                     """
-                ))
+                )
             except Exception:
                 return False
 
@@ -6700,13 +7272,73 @@ class App(tk.Tk):
             except Exception:
                 return False
 
+        rounds = 0
+        max_rounds = 4
+        processed_total = 0
+        approved_total = 0
+        rejected_total = 0
+        idle_no_action_rounds = 0
+        no_growth_rounds = 0
+        last_scroll_height = 0
+        seen_post_keys = set()
+        extra_load_scrolls = 4
+
         while rounds < max_rounds and not self.approval_stop_event.is_set():
             rounds += 1
             posts = _find_pending_posts()
             if not posts:
+                try:
+                    diag = self.driver.execute_script(
+                        """
+                        function vis(el){
+                            try {
+                                if (!el) return false;
+                                var r = el.getBoundingClientRect();
+                                if (r.width < 20 || r.height < 20) return false;
+                                var st = window.getComputedStyle(el);
+                                if (st.display === 'none' || st.visibility === 'hidden') return false;
+                                return true;
+                            } catch(e){ return false; }
+                        }
+                        function txt(el){
+                            try { return (el.innerText || el.textContent || '').replace(/\\s+/g,' ').trim(); }
+                            catch(e){ return ''; }
+                        }
+                        var btns = Array.from(document.querySelectorAll('button, [role="button"]')).filter(vis);
+                        var sample = [];
+                        for (var i=0; i<btns.length && sample.length < 20; i++){
+                            var t = txt(btns[i]);
+                            if (!t) continue;
+                            sample.push(t.slice(0, 80));
+                        }
+                        return {
+                            buttons: btns.length,
+                            checkboxes: document.querySelectorAll('[role="checkbox"], input[type="checkbox"]').length,
+                            articles: document.querySelectorAll('div[role="article"]').length,
+                            sampleButtons: sample
+                        };
+                        """
+                    ) or {}
+                    self._log(
+                        f"  [dbg] pending DOM: buttons={diag.get('buttons', 0)}, checkboxes={diag.get('checkboxes', 0)}, articles={diag.get('articles', 0)}, sample={diag.get('sampleButtons', [])}",
+                        "debug",
+                    )
+                except Exception:
+                    pass
+                if pending_count_hint and pending_count_hint > 0:
+                    if _try_clear_pending_filters():
+                        self._log("🧹 [Duyệt bài] Đã xóa bộ lọc để hiện đủ bài.", "info")
+                    _scroll_pending_container(3)
+                    time.sleep(1.0)
+                    continue
                 if rounds == 1:
                     self._log("ℹ Không tìm thấy bài chờ duyệt nào (hoặc giao diện khác).", "info")
                 break
+
+            try:
+                self._log(f"  [dbg] [Duyệt bài] Tìm được {len(posts)} khối bài để xử lý.", "info")
+            except Exception:
+                pass
 
             processed = 0
             approved = 0
@@ -6737,6 +7369,9 @@ class App(tk.Tk):
 
                     text = text or ""
                     is_suspicious = False
+                    policy_hit = self._detect_policy_violation_text(text)
+                    if policy_hit:
+                        is_suspicious = True
                     for kw in blocked_keywords:
                         if kw and kw in text:
                             is_suspicious = True
@@ -6750,6 +7385,9 @@ class App(tk.Tk):
 
                     if not action:
                         continue
+
+                    if action == "reject" and policy_hit:
+                        self._log(f"  ⛔ Vi phạm chính sách (phát hiện dấu hiệu: {policy_hit}) -> từ chối", "warn")
 
                     # Tìm nút phù hợp bên trong post
                     if action == "approve":
@@ -6774,17 +7412,24 @@ class App(tk.Tk):
                             rejected += 1
 
                     if clicked:
-                        if post_key:
-                            seen_post_keys.add(post_key)
-                        processed += 1
                         if action == "approve":
                             try:
-                                # Cancel dialog: "Phê duyệt trước bài viết..."
+                                # Xử lý dialog "Phê duyệt trước" nếu Facebook bật thêm bước xác nhận.
+                                preapprove_cancelled = False
                                 for _c in range(2):
-                                    if _cancel_preapprove_dialog():
-                                        self._log("  ✅ [Duyệt bài] Đã bấm Hủy phê duyệt trước", "info")
+                                    preapprove_status = _handle_preapprove_dialog()
+                                    if preapprove_status == "cancelled":
+                                        self._log("  ⛔ [Duyệt bài] Đã hủy phê duyệt trước", "warn")
+                                        preapprove_cancelled = True
+                                        break
+                                    if preapprove_status == "not_found":
+                                        break
+                                    if preapprove_status:
+                                        self._log("  ✅ [Duyệt bài] Đã xử lý phê duyệt trước", "info")
                                         break
                                     time.sleep(0.3)
+                                if preapprove_cancelled:
+                                    continue
                                 # Confirm dialog: "Đăng lên nhóm?"
                                 for _c in range(4):
                                     if _confirm_post_to_group_dialog():
@@ -6793,6 +7438,13 @@ class App(tk.Tk):
                                     time.sleep(0.4)
                             except Exception:
                                 pass
+                        if post_key:
+                            seen_post_keys.add(post_key)
+                        processed += 1
+                        if action == "approve":
+                            approved += 1
+                        else:
+                            rejected += 1
                         time.sleep(1.0)
                     else:
                         self._log("  ⚠️ Không click được nút phê duyệt/từ chối (giao diện khác).", "warn")
@@ -6808,7 +7460,7 @@ class App(tk.Tk):
                                         try { t += ' ' + (el.innerText || el.textContent || ''); } catch(e) {}
                                         try { t += ' ' + (el.getAttribute && (el.getAttribute('aria-label') || '')) || ''; } catch(e) {}
                                         try { t += ' ' + (el.getAttribute && (el.getAttribute('data-tooltip-content') || '')) || ''; } catch(e) {}
-                                        return t.replace(/\s+/g,' ').trim();
+                                        return t.replace(/\\s+/g,' ').trim();
                                     }
 
                                     var checkboxes = Array.from(document.querySelectorAll('[role="checkbox"], input[type="checkbox"]'));
@@ -6860,6 +7512,21 @@ class App(tk.Tk):
             approved_total += approved
             rejected_total += rejected
 
+            if processed == 0:
+                idle_no_action_rounds += 1
+            else:
+                idle_no_action_rounds = 0
+
+            if idle_no_action_rounds >= 2 and pending_count_hint and pending_count_hint > 0:
+                self._log("🔄 [Duyệt bài] Có bài chờ duyệt nhưng chưa xử lý được, tải lại trang...", "info")
+                try:
+                    self.driver.get(pending_url)
+                    time.sleep(2.0)
+                except Exception:
+                    pass
+                idle_no_action_rounds = 0
+                continue
+
             try:
                 new_height = int(self.driver.execute_script(
                     "return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) || 0;"
@@ -6877,10 +7544,21 @@ class App(tk.Tk):
                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             except Exception:
                 pass
-            time.sleep(1.4)
+            time.sleep(1.1)
 
-            if processed == 0 and no_growth_rounds >= 2:
+            # Extra scrolls to force lazy-load more pending posts
+            try:
+                for _ in range(extra_load_scrolls):
+                    self.driver.execute_script("window.scrollBy(0, 900);")
+                    time.sleep(0.6)
+            except Exception:
+                pass
+
+            if processed == 0 and no_growth_rounds >= 3:
                 break
+
+            if processed == 0:
+                _scroll_pending_container(2)
 
         self._log(
             f"✅ [Duyệt bài] Đã xử lý {processed_total} bài (phê duyệt {approved_total}, từ chối {rejected_total}) trong {group_url}",
@@ -6904,6 +7582,22 @@ class App(tk.Tk):
             return
 
         mode = self.group_post_mode_var.get()
+        if mode == "interval":
+            try:
+                has_schedule_times = False
+                for s in self.group_post_slots:
+                    if not s["enabled"].get():
+                        continue
+                    times_raw = (s["times"].get() or "").strip()
+                    if times_raw:
+                        has_schedule_times = True
+                        break
+                if has_schedule_times:
+                    mode = "schedule"
+                    self.group_post_mode_var.set("schedule")
+                    self._log("ℹ️ [Nhóm] Đã tự chuyển sang 'Theo lịch' để chờ đúng giờ đăng.", "info")
+            except Exception:
+                pass
         self.group_post_stop_event.clear()
         self.group_post_schedule_stop_event.clear()
         self._set_run_buttons(self.btn_start_group_post, self.btn_stop_group_post, True, ACCENT, "#e74c3c")
@@ -6911,6 +7605,9 @@ class App(tk.Tk):
 
         if mode == "schedule":
             self.group_post_last_run_keys.clear()
+            next_time = self._get_next_group_post_time()
+            if next_time:
+                self._log(f"🕒 [Nhóm] Lần đăng kế tiếp: {next_time}", "info")
             self.group_post_schedule_thread = threading.Thread(
                 target=self._group_post_schedule_worker, args=(selected,), daemon=True
             )
@@ -6952,6 +7649,50 @@ class App(tk.Tk):
         if "counts" not in self.group_post_daily_counts:
             self.group_post_daily_counts["counts"] = {}
         return self.group_post_daily_counts["counts"]
+
+    def _get_next_group_post_time(self):
+        try:
+            now = dt.datetime.now()
+            weekday_vi = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
+            weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            next_times = []
+
+            for slot in self.group_post_slots:
+                if not slot["enabled"].get():
+                    continue
+                mode = slot["mode"].get()
+                times_raw = (slot["times"].get() or "").strip()
+                if not times_raw:
+                    continue
+                times = [t.strip() for t in times_raw.split(",") if t.strip()]
+                for t in times:
+                    try:
+                        hh, mm = [int(x) for x in t.split(":", 1)]
+                    except Exception:
+                        continue
+                    base = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                    if mode == "weekly":
+                        target_day = slot["weekday"].get() if slot["weekday"].get() else "Mon"
+                        if target_day in weekdays:
+                            target_idx = weekdays.index(target_day)
+                            delta = (target_idx - now.weekday()) % 7
+                            candidate = base + dt.timedelta(days=delta)
+                            if candidate < now:
+                                candidate = candidate + dt.timedelta(days=7)
+                            next_times.append(candidate)
+                    else:
+                        candidate = base
+                        if candidate < now:
+                            candidate = candidate + dt.timedelta(days=1)
+                        next_times.append(candidate)
+
+            if not next_times:
+                return ""
+            next_time = min(next_times)
+            day_label = weekday_vi[next_time.weekday()] if 0 <= next_time.weekday() < 7 else ""
+            return f"{day_label}, {next_time.strftime('%H:%M')}".strip(", ")
+        except Exception:
+            return ""
 
     def _group_post_interval_worker(self, group_urls):
         try:
@@ -8469,7 +9210,7 @@ class App(tk.Tk):
                         if (!uid) {
                             var txt = (art.innerText || art.textContent || '').trim();
                             if (txt) {
-                                var small = txt.slice(0, 180).replace(/\s+/g, ' ');
+                                var small = txt.slice(0, 180).replace(/\\s+/g, ' ');
                                 uid = 'txt:' + small;
                             }
                         }
@@ -8642,6 +9383,7 @@ class App(tk.Tk):
                 "template_mode": self.group_post_template_mode_var.get(),
                 "skip_pending_groups": bool(self.group_post_skip_pending_var.get()),
                 "pending_required": self.group_post_pending_required,
+                "pending_override": self.group_post_pending_override,
                 "interval_min": self.group_post_interval_min_var.get(),
                 "interval_max": self.group_post_interval_max_var.get(),
                 "group_rest_min": self.group_post_group_rest_min_var.get(),
@@ -8737,6 +9479,13 @@ class App(tk.Tk):
                     self.group_post_pending_required = {str(k): bool(v) for k, v in pending_map.items()}
             except Exception:
                 self.group_post_pending_required = {}
+
+            try:
+                override_map = config.get("pending_override") or {}
+                if isinstance(override_map, dict):
+                    self.group_post_pending_override = {str(k): bool(v) for k, v in override_map.items()}
+            except Exception:
+                self.group_post_pending_override = {}
 
             self.group_post_daily_counts = config.get("daily_counts") or {}
             self.group_post_selected_urls = set(config.get("selected_groups") or [])
